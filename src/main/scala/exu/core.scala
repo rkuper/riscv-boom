@@ -102,9 +102,13 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
   val pred_rename_stage = Module(new PredRenameStage(coreWidth, ftqSz, 1))
   val rename_stages    = if (usingFPU) Seq(rename_stage, fp_rename_stage, pred_rename_stage) else Seq(rename_stage, pred_rename_stage)
 
-  val mem_iss_unit     = Module(new IssueUnitCollapsing(memIssueParam, numIntIssueWakeupPorts))
+  // val mem_iss_unit     = if (enableCountingIssue) Module(new IssueUnitStatic(memIssueParam, numIntIssueWakeupPorts))
+  val mem_iss_unit     = if (enableCountingIssue) Module(new IssueUnitCounting(memIssueParam, numIntIssueWakeupPorts))
+                         else Module(new IssueUnitCollapsing(memIssueParam, numIntIssueWakeupPorts))
   mem_iss_unit.suggestName("mem_issue_unit")
-  val int_iss_unit     = Module(new IssueUnitCollapsing(intIssueParam, numIntIssueWakeupPorts))
+  // val int_iss_unit     = if (enableCountingIssue) Module(new IssueUnitStatic(intIssueParam, numIntIssueWakeupPorts))
+  val int_iss_unit     = if (enableCountingIssue) Module(new IssueUnitCounting(intIssueParam, numIntIssueWakeupPorts))
+                         else Module(new IssueUnitCollapsing(intIssueParam, numIntIssueWakeupPorts))
   int_iss_unit.suggestName("int_issue_unit")
 
   val issue_units      = Seq(mem_iss_unit, int_iss_unit)

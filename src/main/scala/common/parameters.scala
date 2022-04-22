@@ -38,6 +38,7 @@ case class BoomCoreParams(
   maxBrCount: Int = 4,
   numFetchBufferEntries: Int = 16,
   enableAgePriorityIssue: Boolean = true,
+  enableCountingIssue: Boolean = true,
   enablePrefetching: Boolean = false,
   enableFastLoadUse: Boolean = true,
   enableCommitMapTable: Boolean = false,
@@ -194,6 +195,7 @@ trait HasBoomCoreParameters extends freechips.rocketchip.tile.HasCoreParameters
 
   val issueParams: Seq[IssueParams] = boomParams.issueParams
   val enableAgePriorityIssue = boomParams.enableAgePriorityIssue
+  val enableCountingIssue = boomParams.enableCountingIssue
 
   // currently, only support one of each.
   require (issueParams.count(_.iqType == IQT_FP.litValue) == 1 || !usingFPU)
