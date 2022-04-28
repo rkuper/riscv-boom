@@ -39,6 +39,8 @@ class IssueUnitIndexCollapsing(
     issue_index.index          := 0.U
     issue_index.valid          := false.B
     issue_index.will_be_valid  := false.B
+    issue_index.fu_code        := 0.U
+    issue_index.grant          := false.B
     issue_index
   }))
 
@@ -51,6 +53,8 @@ class IssueUnitIndexCollapsing(
     dispatch_index.index          := 0.U
     dispatch_index.valid          := false.B
     dispatch_index.will_be_valid  := false.B
+    dispatch_index.fu_code        := 0.U
+    dispatch_index.grant          := false.B
     dispatch_index
   }))
 
@@ -136,6 +140,10 @@ class IssueUnitIndexCollapsing(
   var allocated = WireInit(VecInit(Seq.fill(dispatchWidth){false.B}))
 
   for (i <- 0 until numIssueSlots) {
+    issue_slots(i).in_uop.valid := issue_slots(i).valid
+    issue_slots(i).in_uop.bits  := issue_slots(i).uop
+    issue_slots(i).clear        := false.B
+
     var next_allocated = Wire(Vec(dispatchWidth, Bool()))
     var can_allocate   = !(issue_slots(i).valid)
     var slot_allocated = false.B
@@ -143,14 +151,17 @@ class IssueUnitIndexCollapsing(
       // TODO: What is this, why this order
       can_allocate       = can_allocate && !allocated(w)
       next_allocated(w) := can_allocate | allocated(w)
+      // can_allocate       = can_allocate && allocated(w)
 
       // Since this slot is open, assign the dispatched uop to it
       when (!slot_allocated && can_allocate) {
-        issue_slots(i).in_uop.valid         :=  true.B
-        issue_slots(i).in_uop.bits          :=  dis_uops(w)
-        issue_indexes(num_used + w.U).valid :=  true.B
-        issue_indexes(num_used + w.U).index :=  i.U
-        slot_allocated                       =  true.B
+        issue_slots(i).in_uop.valid           :=  true.B
+        issue_slots(i).in_uop.bits            :=  dis_uops(w)
+        issue_indexes(num_used + w.U).valid   :=  true.B
+        issue_indexes(num_used + w.U).index   :=  i.U
+        issue_indexes(num_used + w.U).fu_code :=  dis_uops(w).fu_code
+        issue_indexes(num_used + w.U).grant   :=  false.B
+        slot_allocated                         =  true.B
       }
     }
     allocated = next_allocated
@@ -195,15 +206,23 @@ class IssueUnitIndexCollapsing(
     var uop_issued = false.B
 
     for (w <- 0 until issueWidth) {
-      val can_allocate = (issue_slots(issue_index).uop.fu_code & io.fu_types(w)) =/= 0.U
+      val can_allocate = (issue_indexes(i).fu_code & io.fu_types(w)) =/= 0.U
       when (requests(i) && !uop_issued && can_allocate && !port_issued(w)) {
-        issue_slots(issue_index).grant := true.B
+        issue_indexes(i).grant := true.B
         io.iss_valids(w) := true.B
         io.iss_uops(w) := issue_slots(issue_index).uop
       }
       val was_port_issued_yet = port_issued(w)
       port_issued(w) = (requests(i) && !uop_issued && can_allocate) | port_issued(w)
       uop_issued = (requests(i) && can_allocate && !was_port_issued_yet) | uop_issued
+    }
+  }
+
+  for (i <- 0 until numIssueSlots) {
+    for (ii <- 0 until numIssueSlots) {
+      when (issue_indexes(ii).index === i.U) {
+        issue_slots(i).grant := issue_indexes(ii).grant
+      }
     }
   }
 }
@@ -214,4 +233,6 @@ class IndexedRecord(val IQWidth: Int) extends Bundle {
   val valid = Bool()
   val index = UInt(IQWidth.W)
   val will_be_valid = Bool()
+  val fu_code = UInt(FUConstants.FUC_SZ.W)
+  val grant = Bool()
 }

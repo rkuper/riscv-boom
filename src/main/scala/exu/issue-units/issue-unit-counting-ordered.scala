@@ -137,7 +137,7 @@ class IssueUnitCounting(
 	val currently_valid = (0 until numIssueSlots).map(i => issue_slots(i).valid)
 	val issue_requests = issue_slots.map(s => s.request)
 	val port_used = RegInit(VecInit(Seq.fill(issueWidth) { false.B }))
-	val decision_array = Vec(issueWidth, Vec(numIssueSlots, (log2Ceil(numIssueSlots)+1)))
+	// val decision_array = Vec(issueWidth, Vec(numIssueSlots, (log2Ceil(numIssueSlots)+1).W))
 
 
 
