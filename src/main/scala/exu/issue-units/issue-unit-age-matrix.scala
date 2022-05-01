@@ -114,16 +114,18 @@ class IssueUnitAgeMatrix(
   for (w <- 0 until issueWidth) { port_issued(w) = false.B }
   val granted     = Wire(Vec(numIssueSlots, Bool()))
   for (i <- 0 until numIssueSlots) { granted(i) := false.B }
+  var found_old   = false.B
 
   for (i <- 0 until numIssueSlots) {
     issue_slots(i).grant := false.B
     var uop_issued        = false.B
     val old_age = (PopCount(issue_age_matrix(i).age_vector.asBools) <= 0.U)
+    found_old = found_old || old_age
 
     for (w <- 0 until issueWidth) {
       val can_allocate = (issue_slots(i).uop.fu_code & io.fu_types(w)) =/= 0.U
 
-      when (old_age && requests(i) && !uop_issued && can_allocate && !port_issued(w)) {
+      when (found_old && requests(i) && !uop_issued && can_allocate && !port_issued(w)) {
         granted(i)                := true.B
         issue_slots(i).grant      := true.B
         io.iss_valids(w)          := true.B
@@ -131,8 +133,8 @@ class IssueUnitAgeMatrix(
         issue_age_matrix(i).valid := false.B
       }
       val was_port_issued_yet = port_issued(w)
-      port_issued(w) = (old_age && requests(i) && !uop_issued && can_allocate) | port_issued(w)
-      uop_issued     = (old_age && requests(i) && can_allocate && !was_port_issued_yet) | uop_issued
+      port_issued(w) = (found_old && requests(i) && !uop_issued && can_allocate) | port_issued(w)
+      uop_issued     = (found_old && requests(i) && can_allocate && !was_port_issued_yet) | uop_issued
     }
   }
 

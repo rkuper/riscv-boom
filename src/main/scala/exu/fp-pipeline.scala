@@ -60,8 +60,11 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
 
   val exe_units      = new boom.exu.ExecutionUnits(fpu=true)
   val issue_unit     = if (enableCountingIssue) {
+                         // Module(new IssueUnitStatic(issueParams.find(_.iqType == IQT_FP.litValue).get, numWakeupPorts))
+                         Module(new IssueUnitAgeMatrix(issueParams.find(_.iqType == IQT_FP.litValue).get, numWakeupPorts))
                          // Module(new IssueUnitCounting(issueParams.find(_.iqType == IQT_FP.litValue).get, numWakeupPorts))
-                         Module(new IssueUnitCollapsing(issueParams.find(_.iqType == IQT_FP.litValue).get, numWakeupPorts))
+                         // Module(new IssueUnitIndexCollapsing(issueParams.find(_.iqType == IQT_FP.litValue).get, numWakeupPorts))
+                         // Module(new IssueUnitCollapsing(issueParams.find(_.iqType == IQT_FP.litValue).get, numWakeupPorts))
                        } else {
                          Module(new IssueUnitCollapsing(issueParams.find(_.iqType == IQT_FP.litValue).get, numWakeupPorts))
                       }
