@@ -77,7 +77,8 @@ class FpPipeline(implicit p: Parameters) extends BoomModule with tile.HasFPUPara
                          exe_units.withFilter(_.readsFrf).map(x => 3),
                          0, // No bypass for FP
                          0,
-                         fLen+1))
+                         fLen+1,
+                         false))
 
   require (exe_units.count(_.readsFrf) == issue_unit.issueWidth)
   require (exe_units.numFrfWritePorts + numLlPorts == numWakeupPorts)

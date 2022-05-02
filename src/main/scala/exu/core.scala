@@ -67,8 +67,10 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
   //**********************************
   // construct all of the modules
 
+  val halfPrice = true
+
   // Only holds integer-registerfile execution units.
-  val exe_units = new boom.exu.ExecutionUnits(fpu=false)
+  val exe_units = new boom.exu.ExecutionUnits(fpu=false, halfPrice=halfPrice)
   val jmp_unit_idx = exe_units.jmp_unit_idx
   val jmp_unit = exe_units(jmp_unit_idx)
 
@@ -104,7 +106,7 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
 
   val mem_iss_unit     = Module(new IssueUnitCollapsing(memIssueParam, numIntIssueWakeupPorts))
   mem_iss_unit.suggestName("mem_issue_unit")
-  val int_iss_unit     = Module(new IssueUnitCollapsing(intIssueParam, numIntIssueWakeupPorts))
+  val int_iss_unit     = Module(new IssueUnitCollapsing(intIssueParam, numIntIssueWakeupPorts, halfPrice = halfPrice))
   int_iss_unit.suggestName("int_issue_unit")
 
   val issue_units      = Seq(mem_iss_unit, int_iss_unit)
@@ -130,13 +132,15 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
                                                                    (if (usingFPU) 1 else 0) +
                                                                    (if (usingRoCC) 1 else 0)))
   val iregister_read   = Module(new RegisterRead(
-                           issue_units.map(_.issueWidth).sum,
-                           exe_units.withFilter(_.readsIrf).map(_.supportedFuncUnits),
-                           numIrfReadPorts,
-                           exe_units.withFilter(_.readsIrf).map(x => 2),
-                           exe_units.numTotalBypassPorts,
-                           jmp_unit.numBypassStages,
-                           xLen))
+    issueWidth              = issue_units.map(_.issueWidth).sum,
+    supportedUnitsArray     = exe_units.withFilter(_.readsIrf).map(_.supportedFuncUnits),
+    numTotalReadPorts       = numIrfReadPorts,
+    numReadPortsArray       = exe_units.withFilter(_.readsIrf).map(x => if (halfPrice) 1 else 2),
+    numTotalBypassPorts     = exe_units.numTotalBypassPorts,
+    numTotalPredBypassPorts = jmp_unit.numBypassStages,
+    registerWidth           = xLen,
+    halfPrice               = halfPrice,
+  ))
   val rob              = Module(new Rob(
                            numIrfWritePorts + numFpWakeupPorts, // +memWidth for ll writebacks
                            numFpWakeupPorts))
@@ -820,6 +824,8 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
                               iss_uops(i).dst_rtype === RT_FIX &&
                               iss_uops(i).ldst_val &&
                               !(io.lsu.ld_miss && (iss_uops(i).iw_p1_poisoned || iss_uops(i).iw_p2_poisoned))
+
+      // TODO: Delay wakeup by a cycle if issued uop sets hp_stall_required
 
       // Slow Wakeup (uses write-port to register file)
       slow_wakeup.bits.uop := resp.bits.uop

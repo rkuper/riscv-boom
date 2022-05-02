@@ -28,7 +28,8 @@ import boom.common._
  */
 class IssueUnitCollapsing(
   params: IssueParams,
-  numWakeupPorts: Int)
+  numWakeupPorts: Int,
+  halfPrice: Boolean = false)
   (implicit p: Parameters)
   extends IssueUnit(params.numEntries, params.issueWidth, numWakeupPorts, params.iqType, params.dispatchWidth)
 {
@@ -105,8 +106,13 @@ class IssueUnitCollapsing(
   val requests = issue_slots.map(s => s.request)
   val port_issued = Array.fill(issueWidth){Bool()}
   for (w <- 0 until issueWidth) {
-    port_issued(w) = false.B
+    // For half-price enabled Issue Queues, ISS/RR is occupied for an additional cycle
+    port_issued(w) = {
+      if (halfPrice) RegNext(io.iss_uops(w).hp_stall_required)
+      else           false.B
+    }
   }
+
 
   for (i <- 0 until numIssueSlots) {
     issue_slots(i).grant := false.B

@@ -84,10 +84,21 @@ class IssueSlot(val numWakeupPorts: Int)(implicit p: Parameters)
   val next_lrs2_rtype = Wire(UInt()) // the next reg type of this slot (which might then get moved to a new slot)
 
   val state = RegInit(s_invalid)
+
+  // Readiness bits for sources
   val p1    = RegInit(false.B)
   val p2    = RegInit(false.B)
   val p3    = RegInit(false.B)
   val ppred = RegInit(false.B)
+
+  // Determine if the instruction will require 2 RR cycles when issued
+  val hp_stall_required = RegInit(false.B)
+  val hp_src_select = RegInit(false.B) // false -> rr1 = rs1, true -> rr1 = rs2
+
+  // asserted true when prs1/prs2 wakeup occurs, should only be active for 1 cycle
+  // indicates that source should be available on bypass network during RR
+  val hp_prs1_rr_bypass = WireInit(false.B)
+  val hp_prs2_rr_bypass = WireInit(false.B)
 
   // Poison if woken up by speculative load.
   // Poison lasts 1 cycle (as ldMiss will come on the next cycle).
@@ -165,6 +176,20 @@ class IssueSlot(val numWakeupPorts: Int)(implicit p: Parameters)
   val next_p3 = WireInit(p3)
   val next_ppred = WireInit(ppred)
 
+  // Determine if this slot will need to stall if issued in the next cycle
+  hp_stall_required := (
+    next_uop.hp_candidate && // - Incoming uop has valid rs1 and rs2
+    !hp_prs1_rr_bypass &&    // - RS1 is ready but wakeup did not just occur
+    !hp_prs2_rr_bypass       // - RS2 is ready but wakeup did not just occur
+  )
+
+  // Set the sticky src select bit
+  // - Used during ISS to mux the correct register read address
+  // - Used during RR to select the second source during the second cycle of half-price RR
+  hp_src_select := Mux(hp_prs1_rr_bypass, true.B,
+                   Mux(hp_prs2_rr_bypass, false.B,
+                                          next_uop.hp_src_select))
+
   when (io.in_uop.valid) {
     p1 := !(io.in_uop.bits.prs1_busy)
     p2 := !(io.in_uop.bits.prs2_busy)
@@ -185,10 +210,12 @@ class IssueSlot(val numWakeupPorts: Int)(implicit p: Parameters)
     when (io.wakeup_ports(i).valid &&
          (io.wakeup_ports(i).bits.pdst === next_uop.prs1)) {
       p1 := true.B
+      hp_prs1_rr_bypass := true.B
     }
     when (io.wakeup_ports(i).valid &&
          (io.wakeup_ports(i).bits.pdst === next_uop.prs2)) {
       p2 := true.B
+      hp_prs2_rr_bypass := true.B
     }
     when (io.wakeup_ports(i).valid &&
          (io.wakeup_ports(i).bits.pdst === next_uop.prs3)) {
@@ -273,6 +300,9 @@ class IssueSlot(val numWakeupPorts: Int)(implicit p: Parameters)
   io.out_uop.ppred_busy := !ppred
   io.out_uop.iw_p1_poisoned := p1_poisoned
   io.out_uop.iw_p2_poisoned := p2_poisoned
+
+  io.out_uop.hp_stall_required := hp_stall_required
+  io.out_uop.hp_src_select := hp_src_select
 
   when (state === s_valid_2) {
     when (p1 && p2 && ppred) {

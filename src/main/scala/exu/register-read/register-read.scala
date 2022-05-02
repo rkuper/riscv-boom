@@ -30,6 +30,7 @@ import boom.util._
  * @param numReadPortsArray execution units read port sequence
  * @param numTotalBypassPorts number of bypass ports out of the execution units
  * @param registerWidth size of register in bits
+ * @param halfPrice combine first two read ports into a single port
  */
 class RegisterRead(
   issueWidth: Int,
@@ -41,7 +42,8 @@ class RegisterRead(
                         // numTotalReadPorts)
   numTotalBypassPorts: Int,
   numTotalPredBypassPorts: Int,
-  registerWidth: Int
+  registerWidth: Int,
+  halfPrice: Boolean,
 )(implicit p: Parameters) extends BoomModule
 {
   val io = IO(new Bundle {
@@ -74,12 +76,61 @@ class RegisterRead(
   val exe_reg_pred_data = Reg(Vec(issueWidth, Bool()))
 
   //-------------------------------------------------------------
+  // Half-price price register read
+  // Issuing uop requires two sources
+  // - Reads one from the bypass network
+  // - Reads one from the register file
+  // hprs1/hprs2 are not necessarilly rs1/rs2, they could be switched depending on what is known to be on the bypass network
+  // - hprs1: register read during the first cycle of the half price mechanism
+  // - hprs2: register read during the second cycle of the half price scheme
+  // Indicated by additional sticky bit captured in IssQ for which source was the younger wakeup signal (younger wakeup is bypass/hprs2)
+
+  // TODO:
+  // - Flop rrd data back into stage and switch register read destination
+  // - Mux rs1/rs2 register read address from iss info
+  // - Reduce and mux register read ports
+
+  val hp_state = RegInit(VecInit(Seq.fill(issueWidth)(false.B)))
+  val hp_state_next = WireInit(VecInit(Seq.fill(issueWidth)(false.B)))
+  val hp_first_read = hp_state.map(!_)
+  val rrd_kill = WireInit(VecInit(Seq.fill(issueWidth)(false.B)))
+  val rrd_stall = RegInit(VecInit(Seq.fill(issueWidth)(false.B)))
+
+  // Use existing valids/uop info if doing a half-price stall
+  val iss_valids = (0 until issueWidth).map({ w =>
+    Mux(halfPrice.B && rrd_stall(w), rrd_valids(w),
+                                     io.iss_valids(w))
+  })
+  val iss_uops = (0 until issueWidth).map({ w =>
+    Mux(halfPrice.B && rrd_stall(w), rrd_uops(w),
+                                     io.iss_uops(w))
+  })
+
+  for (w <- 0 until issueWidth) {
+
+    if (halfPrice) {
+      // Manage half price state
+      // reading first source or second source from register file into rrd_reg, compose two cycles / bypass into exe_reg
+      // hp_state_next should be used to select register file address in iss stage
+      when (hp_state(w) || rrd_kill(w)) {
+        hp_state_next := false.B
+      } .otherwise {
+        hp_state_next := iss_uops(w).hp_stall_required
+      }
+      // Stall occurs when the issuing uop needs to read 2 sources from the register file, and currently doing first read
+      rrd_stall(w) := iss_uops(w).hp_stall_required && !hp_state_next(w)
+
+    }
+
+    hp_state := hp_state_next
+  }
+  //-------------------------------------------------------------
   // hook up inputs
 
   for (w <- 0 until issueWidth) {
     val rrd_decode_unit = Module(new RegisterReadDecode(supportedUnitsArray(w)))
-    rrd_decode_unit.io.iss_valid := io.iss_valids(w)
-    rrd_decode_unit.io.iss_uop   := io.iss_uops(w)
+    rrd_decode_unit.io.iss_valid := iss_valids(w)
+    rrd_decode_unit.io.iss_uop   := iss_uops(w)
 
     rrd_valids(w) := RegNext(rrd_decode_unit.io.rrd_valid &&
                 !IsKilledByBranch(io.brupdate, rrd_decode_unit.io.rrd_uop))
@@ -110,10 +161,10 @@ class RegisterRead(
     // rrdLatency==1, we need to send read address at end of ISS stage,
     //    in order to get read data back at end of RRD stage.
 
-    val rs1_addr = io.iss_uops(w).prs1
-    val rs2_addr = io.iss_uops(w).prs2
-    val rs3_addr = io.iss_uops(w).prs3
-    val pred_addr = io.iss_uops(w).ppred
+    val rs1_addr = iss_uops(w).prs1
+    val rs2_addr = iss_uops(w).prs2
+    val rs3_addr = iss_uops(w).prs3
+    val pred_addr = iss_uops(w).ppred
 
     if (numReadPorts > 0) io.rf_read_ports(idx+0).addr := rs1_addr
     if (numReadPorts > 1) io.rf_read_ports(idx+1).addr := rs2_addr
@@ -125,13 +176,18 @@ class RegisterRead(
     if (numReadPorts > 1) rrd_rs2_data(w) := Mux(RegNext(rs2_addr === 0.U), 0.U, io.rf_read_ports(idx+1).data)
     if (numReadPorts > 2) rrd_rs3_data(w) := Mux(RegNext(rs3_addr === 0.U), 0.U, io.rf_read_ports(idx+2).data)
 
-    if (enableSFBOpt) rrd_pred_data(w) := Mux(RegNext(io.iss_uops(w).is_sfb_shadow), io.prf_read_ports(w).data, false.B)
+    if (enableSFBOpt) rrd_pred_data(w) := Mux(RegNext(iss_uops(w).is_sfb_shadow), io.prf_read_ports(w).data, false.B)
 
-    val rrd_kill = io.kill || IsKilledByBranch(io.brupdate, rrd_uops(w))
+    rrd_kill(w) := io.kill || IsKilledByBranch(io.brupdate, rrd_uops(w))
 
-    exe_reg_valids(w) := Mux(rrd_kill, false.B, rrd_valids(w))
-    // TODO use only the valids signal, don't require us to set nullUop
-    exe_reg_uops(w)   := Mux(rrd_kill, NullMicroOp, rrd_uops(w))
+    // Only half-price candidates should ever stall
+    when (!iss_uops(w).hp_candidate) {
+      assert(!iss_uops(w).hp_stall_required)
+    }
+
+    // If RR stalled or killed, need to insert NOP bubble for EX/WB
+    exe_reg_valids(w) := Mux(rrd_kill(w) || rrd_stall(w), false.B, rrd_valids(w))
+    exe_reg_uops(w)   := Mux(rrd_kill(w) || rrd_stall(w), NullMicroOp, rrd_uops(w))
 
     exe_reg_uops(w).br_mask := GetNewBrMask(io.brupdate, rrd_uops(w))
 

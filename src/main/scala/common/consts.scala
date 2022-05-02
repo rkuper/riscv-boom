@@ -276,6 +276,8 @@ trait ScalarOpConstants
     uop.pdst       := 0.U
     uop.dst_rtype  := RT_X
 
+    uop.hp_stall_required  := false.B
+
     val cs = Wire(new boom.common.CtrlSignals())
     cs             := DontCare // Overridden in the following lines
     cs.br_type     := BR_N

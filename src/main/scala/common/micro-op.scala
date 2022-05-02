@@ -152,6 +152,11 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   def unsafe           = uses_ldq || (uses_stq && !is_fence) || is_br || is_jalr
 
   def fu_code_is(_fu: UInt) = (fu_code & _fu) =/= 0.U
+
+  // Half-price - Could RR Stall if requires two sources
+  def hp_candidate = (lrs1_rtype =/= RT_X && lrs2_rtype =/= RT_X)
+  val hp_src_select = Bool()
+  val hp_stall_required = Bool()
 }
 
 /**
