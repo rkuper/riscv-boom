@@ -67,7 +67,7 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
   //**********************************
   // construct all of the modules
 
-  val halfPrice = true
+  val halfPrice = false
 
   // Only holds integer-registerfile execution units.
   val exe_units = new boom.exu.ExecutionUnits(fpu=false, halfPrice=halfPrice)
@@ -809,10 +809,14 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
   // loop through each issue-port (exe_units are statically connected to an issue-port)
   for (i <- 0 until exe_units.length) {
     if (exe_units(i).writesIrf) {
-      val fast_wakeup = Wire(Valid(new ExeUnitResp(xLen)))
-      val slow_wakeup = Wire(Valid(new ExeUnitResp(xLen)))
-      fast_wakeup := DontCare
-      slow_wakeup := DontCare
+
+      val fast_wakeup    = Wire(Valid(new ExeUnitResp(xLen)))
+      val fast_hp_wakeup = Wire(Valid(new ExeUnitResp(xLen)))
+      val slow_wakeup    = Wire(Valid(new ExeUnitResp(xLen)))
+
+      fast_wakeup    := DontCare
+      fast_hp_wakeup := DontCare
+      slow_wakeup    := DontCare
 
       val resp = exe_units(i).io.iresp
       assert(!(resp.valid && resp.bits.uop.rf_wen && resp.bits.uop.dst_rtype =/= RT_FIX))
@@ -823,9 +827,19 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
                               iss_uops(i).bypassable &&
                               iss_uops(i).dst_rtype === RT_FIX &&
                               iss_uops(i).ldst_val &&
-                              !(io.lsu.ld_miss && (iss_uops(i).iw_p1_poisoned || iss_uops(i).iw_p2_poisoned))
+                              !(io.lsu.ld_miss && (iss_uops(i).iw_p1_poisoned || iss_uops(i).iw_p2_poisoned)) &&
+                              !iss_uops(i).hp_stall_required
 
-      // TODO: Delay wakeup by a cycle if issued uop sets hp_stall_required
+      // Delay wakeup by a cycle if issued uop sets hp_stall_required
+      fast_hp_wakeup.bits.uop := RegNext(iss_uops(i))
+      fast_hp_wakeup.valid    := RegNext(
+        iss_valids(i) &&
+        iss_uops(i).bypassable &&
+        iss_uops(i).dst_rtype === RT_FIX &&
+        iss_uops(i).ldst_val &&
+        !(io.lsu.ld_miss && (iss_uops(i).iw_p1_poisoned || iss_uops(i).iw_p2_poisoned)) &&
+        iss_uops(i).hp_stall_required
+      )
 
       // Slow Wakeup (uses write-port to register file)
       slow_wakeup.bits.uop := resp.bits.uop
@@ -835,7 +849,7 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
                                 resp.bits.uop.dst_rtype === RT_FIX
 
       if (exe_units(i).bypassable) {
-        int_iss_wakeups(iss_wu_idx) := fast_wakeup
+        int_iss_wakeups(iss_wu_idx) := Mux(RegNext(iss_uops(i).hp_stall_required), fast_hp_wakeup, fast_wakeup)
         iss_wu_idx += 1
       }
       if (!exe_units(i).alwaysBypassable) {
@@ -844,7 +858,7 @@ class BoomCore(usingTrace: Boolean)(implicit p: Parameters) extends BoomModule
       }
 
       if (exe_units(i).bypassable) {
-        int_ren_wakeups(ren_wu_idx) := fast_wakeup
+        int_ren_wakeups(ren_wu_idx) := Mux(RegNext(iss_uops(i).hp_stall_required), fast_hp_wakeup, fast_wakeup)
         ren_wu_idx += 1
       }
       if (!exe_units(i).alwaysBypassable) {

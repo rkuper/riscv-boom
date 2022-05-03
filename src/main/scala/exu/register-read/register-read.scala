@@ -85,14 +85,8 @@ class RegisterRead(
   // - hprs2: register read during the second cycle of the half price scheme
   // Indicated by additional sticky bit captured in IssQ for which source was the younger wakeup signal (younger wakeup is bypass/hprs2)
 
-  // TODO:
-  // - Flop rrd data back into stage and switch register read destination
-  // - Mux rs1/rs2 register read address from iss info
-  // - Reduce and mux register read ports
-
   val hp_state = RegInit(VecInit(Seq.fill(issueWidth)(false.B)))
   val hp_state_next = WireInit(VecInit(Seq.fill(issueWidth)(false.B)))
-  val hp_first_read = hp_state.map(!_)
   val rrd_kill = WireInit(VecInit(Seq.fill(issueWidth)(false.B)))
   val rrd_stall = RegInit(VecInit(Seq.fill(issueWidth)(false.B)))
 
@@ -113,9 +107,9 @@ class RegisterRead(
       // reading first source or second source from register file into rrd_reg, compose two cycles / bypass into exe_reg
       // hp_state_next should be used to select register file address in iss stage
       when (hp_state(w) || rrd_kill(w)) {
-        hp_state_next := false.B
+        hp_state_next(w) := false.B
       } .otherwise {
-        hp_state_next := iss_uops(w).hp_stall_required
+        hp_state_next(w) := iss_uops(w).hp_stall_required
       }
       // Stall occurs when the issuing uop needs to read 2 sources from the register file, and currently doing first read
       rrd_stall(w) := iss_uops(w).hp_stall_required && !hp_state_next(w)
@@ -151,6 +145,17 @@ class RegisterRead(
   rrd_rs3_data := DontCare
   rrd_pred_data := DontCare
 
+  // Half price shared port data
+
+  // which uop source is used
+  val iss_sel_rs1  = (0 until issueWidth).map({ w =>
+    hp_state_next(w) ^ iss_uops(w).hp_src_select
+  })
+  val iss_rsx_addr = (0 until issueWidth).map({ w =>
+    Mux(iss_sel_rs1(w), iss_uops(w).prs1, iss_uops(w).prs2)
+  })
+  val rrd_rsx_data = Wire(Vec(issueWidth, Bits(registerWidth.W)))
+
   io.prf_read_ports := DontCare
 
   var idx = 0 // index into flattened read_ports array
@@ -161,20 +166,35 @@ class RegisterRead(
     // rrdLatency==1, we need to send read address at end of ISS stage,
     //    in order to get read data back at end of RRD stage.
 
+    val rsx_addr = iss_rsx_addr(w)
     val rs1_addr = iss_uops(w).prs1
     val rs2_addr = iss_uops(w).prs2
     val rs3_addr = iss_uops(w).prs3
     val pred_addr = iss_uops(w).ppred
 
-    if (numReadPorts > 0) io.rf_read_ports(idx+0).addr := rs1_addr
-    if (numReadPorts > 1) io.rf_read_ports(idx+1).addr := rs2_addr
-    if (numReadPorts > 2) io.rf_read_ports(idx+2).addr := rs3_addr
+    if (halfPrice) {
+      io.rf_read_ports(idx+0).addr := rsx_addr
+      if (numReadPorts > 1) io.rf_read_ports(idx+1).addr := rs3_addr
+    } else {
+      if (numReadPorts > 0) io.rf_read_ports(idx+0).addr := rs1_addr
+      if (numReadPorts > 1) io.rf_read_ports(idx+1).addr := rs2_addr
+      if (numReadPorts > 2) io.rf_read_ports(idx+2).addr := rs3_addr
+    }
 
     if (enableSFBOpt) io.prf_read_ports(w).addr := pred_addr
 
-    if (numReadPorts > 0) rrd_rs1_data(w) := Mux(RegNext(rs1_addr === 0.U), 0.U, io.rf_read_ports(idx+0).data)
-    if (numReadPorts > 1) rrd_rs2_data(w) := Mux(RegNext(rs2_addr === 0.U), 0.U, io.rf_read_ports(idx+1).data)
-    if (numReadPorts > 2) rrd_rs3_data(w) := Mux(RegNext(rs3_addr === 0.U), 0.U, io.rf_read_ports(idx+2).data)
+    if (halfPrice) {
+      rrd_rsx_data(w) := Mux(RegNext(rsx_addr === 0.U), 0.U, io.rf_read_ports(idx+0).data)
+      rrd_rs1_data(w) := Mux(RegNext(iss_sel_rs1(w)), rrd_rsx_data(w), RegNext(rrd_rsx_data(w)))
+      rrd_rs2_data(w) := Mux(RegNext(iss_sel_rs1(w)), RegNext(rrd_rsx_data(w)), rrd_rsx_data(w))
+
+      if (numReadPorts > 1) rrd_rs3_data(w) := Mux(RegNext(rs3_addr === 0.U), 0.U, io.rf_read_ports(idx+1).data)
+    } else {
+      rrd_rsx_data(w) := DontCare
+      if (numReadPorts > 0) rrd_rs1_data(w) := Mux(RegNext(rs1_addr === 0.U), 0.U, io.rf_read_ports(idx+0).data)
+      if (numReadPorts > 1) rrd_rs2_data(w) := Mux(RegNext(rs2_addr === 0.U), 0.U, io.rf_read_ports(idx+1).data)
+      if (numReadPorts > 2) rrd_rs3_data(w) := Mux(RegNext(rs3_addr === 0.U), 0.U, io.rf_read_ports(idx+2).data)
+    }
 
     if (enableSFBOpt) rrd_pred_data(w) := Mux(RegNext(iss_uops(w).is_sfb_shadow), io.prf_read_ports(w).data, false.B)
 
@@ -232,14 +252,25 @@ class RegisterRead(
         && bypass.bits.uop.dst_rtype === RT_FIX && lrs2_rtype === RT_FIX && (prs2 =/= 0.U), bypass.bits.data))
     }
 
+    if (halfPrice) {
+      // There should not be any bypass match for either source during second cycle of rrd
+      assert(!(hp_state(w) && rs1_cases.map(_._1).reduce(_||_)))
+      assert(!(hp_state(w) && rs2_cases.map(_._1).reduce(_||_)))
+    }
+
     for (b <- 0 until numTotalPredBypassPorts)
     {
       val bypass = io.pred_bypass(b)
       pred_cases ++= Array((bypass.valid && (ppred === bypass.bits.uop.pdst) && bypass.bits.uop.is_sfb_br, bypass.bits.data))
     }
 
-    if (numReadPorts > 0) bypassed_rs1_data(w)  := MuxCase(rrd_rs1_data(w), rs1_cases)
-    if (numReadPorts > 1) bypassed_rs2_data(w)  := MuxCase(rrd_rs2_data(w), rs2_cases)
+    if (halfPrice) {
+      bypassed_rs1_data(w)  := MuxCase(rrd_rs1_data(w), rs1_cases)
+      bypassed_rs2_data(w)  := MuxCase(rrd_rs2_data(w), rs2_cases)
+    } else {
+      if (numReadPorts > 0) bypassed_rs1_data(w)  := MuxCase(rrd_rs1_data(w), rs1_cases)
+      if (numReadPorts > 1) bypassed_rs2_data(w)  := MuxCase(rrd_rs2_data(w), rs2_cases)
+    }
     if (enableSFBOpt)     bypassed_pred_data(w) := MuxCase(rrd_pred_data(w), pred_cases)
   }
 
